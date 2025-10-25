@@ -45,7 +45,7 @@ set LOG_FILE=SmartSort.log
 # B. Run the Test HarnessCommand:python test/TestApp.py
 The application will prompt you for a choice:
 Enter l (Local): Executes the predict.py's handle function directly, loading the trashnet_classifier.keras file from the main/ directory and classifying the image.
-Enter r (Remote): Attempts to send the test image to the remote OpenFaaS endpoint (http://localhost:8080/function/ocr-detect).
+Enter r (Remote): Attempts to send the test image to the remote OpenFaaS endpoint (http://localhost:8080/function/SmartSort).
 Enter e (Exit): Closes the application.C. Check LogsIf DIAGNOSTICS is set to true, a log file will be generated:
 
 # View the logs after running a local test
