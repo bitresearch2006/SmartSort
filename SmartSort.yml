@@ -1,0 +1,15 @@
+provider:
+  name: openfaas
+  gateway: http://127.0.0.1:8080
+
+functions:
+  SmartSort:
+    lang: python3-http-debian
+    handler: ./main
+    image: localhost:5000/SmartSort:latest
+    min_replicas: 1
+    build_args:
+      ADDITIONAL_PACKAGE: ""
+    environment:
+      DIAGNOSTICS: "false"
+      LOG_DIR: "/tmp/SmartSort_logs"
