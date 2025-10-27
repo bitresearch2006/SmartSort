@@ -12,6 +12,7 @@ if IS_REAL_TF:
     from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, RandomFlip, RandomRotation, RandomZoom, Rescaling
     from tensorflow.keras.models import Model, Sequential
     from tensorflow.keras.optimizers import Adam
+    # Callbacks (EarlyStopping, ModelCheckpoint) removed
     # Set seed early for real TensorFlow
     tf.random.set_seed(SEED)
     print("TensorFlow initialization complete.")
@@ -23,82 +24,95 @@ else:
 # --- Model Configuration ---
 MODEL_SAVE_PATH = 'trashnet_classifier.keras'
 IMAGE_SIZE = (224, 224)
-LEARNING_RATE = 0.0001
-EPOCHS = 10
+
+# Learning Rates
+LEARNING_RATE = 0.0001        # Rate for training the new head layers
+
+# Training Phases
+EPOCHS = 10         # Train the new head layer only (reverting to simple training)
 
 def build_data_augmentation_layers():
     """Defines a Keras Sequential model for on-the-fly data augmentation."""
     return Sequential([
         # Randomly flip images horizontally
         RandomFlip("horizontal"), 
-        # Randomly rotate images by up to 20%
-        RandomRotation(0.2),
-        # Randomly zoom in/out by up to 20%
-        RandomZoom(0.2), 
-        # Rescale pixel values from [0, 255] to the [-1, 1] range expected by MobileNetV2
-        # This is CRITICAL for using pre-trained weights
-        Rescaling(1./127.5, offset=-1)
-    ], name="data_augmentation")
+        # Randomly rotate images up to 20%
+        RandomRotation(0.2), 
+        # Randomly zoom images up to 20%
+        RandomZoom(0.2)
+    ])
 
+def build_model(num_classes):
+    """
+    Builds the MobileNetV2 classification model with custom top layers.
+    The base model remains frozen, enabling stable Transfer Learning.
+    """
+    
+    # 1. Load the pre-trained MobileNetV2 base model once
+    base_model = MobileNetV2(
+        input_shape=IMAGE_SIZE + (3,),
+        include_top=False,
+        weights='imagenet'
+    )
+    
+    # Freeze the base model layers (This is the defining state for the model)
+    base_model.trainable = False 
+
+    # Create the full model using Sequential API
+    model = Sequential([
+        # Rescale inputs to the [0, 1] range (MobileNetV2 expects this)
+        Rescaling(1./255),
+        
+        # Add data augmentation layers for on-the-fly processing
+        build_data_augmentation_layers(),
+        
+        # Add the frozen base model
+        base_model,
+        
+        # New classification head:
+        # Global Average Pooling to reduce spatial dimensions
+        GlobalAveragePooling2D(),
+        
+        # ADDED: A small, dense hidden layer to increase model capacity
+        Dense(128, activation='relu'), 
+        
+        # Output layer with softmax activation for multi-class classification
+        Dense(num_classes, activation='softmax')
+    ])
+
+    return model
 
 def build_and_train_model(train_ds, val_ds, num_classes):
-    """
-    Builds the MobileNetV2 transfer learning model, compiles it, and starts training.
-    Uses real Keras logic if TensorFlow is installed, otherwise prints mock messages.
-    """
+    """Compiles and trains the Keras model, only training the new classification head."""
+
     if IS_REAL_TF:
-        print("\n--- Building Real Keras Model with Data Augmentation ---")
-        
-        # 1. Define the augmentation pipeline
-        data_augmentation = build_data_augmentation_layers()
 
-        # 2. Load the pre-trained MobileNetV2 model
-        base_model = MobileNetV2(
-            weights='imagenet',
-            include_top=False, # We want to add our own classification layers
-            input_shape=(IMAGE_SIZE[0], IMAGE_SIZE[1], 3)
-        )
-        # Freeze the base layers so they are not re-trained
-        base_model.trainable = False 
+        # 1. Build the model with a frozen base
+        model = build_model(num_classes)
+        
+        print("\n--- Starting Model Training (Head Layers Only) ---")
+        print(f"Total Epochs: {EPOCHS}")
 
-        # 3. Construct the full model pipeline
-        inputs = tf.keras.Input(shape=(IMAGE_SIZE[0], IMAGE_SIZE[1], 3))
-        # Augmentation is applied first
-        x = data_augmentation(inputs)  
-        # Then the frozen base model processes the augmented images
-        x = base_model(x, training=False) 
-        x = GlobalAveragePooling2D()(x) # Reduce feature maps to a single vector
-        x = Dense(1024, activation='relu')(x) # Hidden dense layer
-        predictions = Dense(num_classes, activation='softmax')(x)
-        
-        # 4. Final Model
-        model = Model(inputs=inputs, outputs=predictions)
-        
-        # 5. Compile the model
+        # 2. Compile the model
         model.compile(
             optimizer=Adam(learning_rate=LEARNING_RATE),
             loss='categorical_crossentropy',
             metrics=['accuracy']
         )
-        print(f"Real Keras Model compiled for {num_classes} classes.")
         
-        # 6. Training
-        print(f"\n--- Beginning Training (Real Keras) for {EPOCHS} epochs ---")
-        try:
-            model.fit(
-                train_ds,
-                epochs=EPOCHS,
-                validation_data=val_ds
-            )
-            print("Training completed.")
-        except Exception as e:
-            print(f"Error during Keras model fit: {e}")
-            print("This usually happens if the data pipeline or GPU setup is incomplete.")
-            return
+        print("\n--- Model Summary ---")
+        model.summary()
 
-        # 7. Save the model
+        # 3. Train
+        model.fit(
+            train_ds,
+            epochs=EPOCHS,
+            validation_data=val_ds
+        )
+        
+        # 4. Save the model
         model.save(MODEL_SAVE_PATH)
-        print(f"\nModel saved successfully to {MODEL_SAVE_PATH}")
+        print(f"\nModel saved successfully to {MODEL_SAVE_PATH} after {EPOCHS} epochs.")
 
     else:
         # Mock training execution (prints status messages only)
@@ -114,23 +128,27 @@ def main():
     print("\n--- Starting Model Training Process ---")
     
     # 1. Load data (this function also handles download/cleanup if necessary)
-    train_ds, val_ds = load_and_prepare_data()
+    result = load_and_prepare_data()
 
-    if train_ds and hasattr(train_ds, 'class_names'):
-        class_names = train_ds.class_names
+    if result and len(result) == 3:
+        train_ds, val_ds, class_names = result
+        
+        # Check if the data objects themselves are valid (not None from failure)
+        if train_ds is None or val_ds is None:
+            print("Error: Dataset objects are None, indicating a FATAL ERROR during Keras setup. Aborting training.")
+            return
+
         num_classes = len(class_names)
         
         print(f"\nFinal Class Count: {num_classes} classes")
         
         # 2. Build and Train
         build_and_train_model(train_ds, val_ds, num_classes)
+        
     else:
-        print("Error: Data loading failed or class names could not be determined. Aborting training.")
+        # Generic error handler for data loading issues
+        print("Error: Data loading failed or returned an invalid structure. Aborting training.")
 
 
 if __name__ == "__main__":
-    # Ensure correct working directory context
-    if os.path.basename(os.getcwd()) != 'main':
-        print("Warning: Ensure you run this script from the 'main' directory.")
-        
     main()

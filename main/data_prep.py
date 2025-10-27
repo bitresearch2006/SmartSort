@@ -3,16 +3,15 @@ import sys
 import zipfile
 import requests
 import shutil
-import io # Needed for nested zip handling
+import io
 
 # --- Configuration (Global Constants) ---
-# NOTE: Replace 'YOUR_GITHUB_USERNAME' with your actual username after forking.
 GITHUB_ZIP_URL = "https://github.com/bitresearch2006/trashnet/archive/refs/heads/master.zip"
 
 DATA_DIR_BASE = 'trashnet_data'
 DATA_DIR_RESIZED = os.path.join(DATA_DIR_BASE, 'dataset-resized')
 ZIP_FILENAME = os.path.join(DATA_DIR_BASE, 'trashnet-master.zip')
-SEED = 42 # Used for reproducibility
+SEED = 42
 
 # Image and Data Loading Configuration
 IMAGE_SIZE = (224, 224)
@@ -20,6 +19,7 @@ BATCH_SIZE = 32
 VALIDATION_SPLIT = 0.2
 
 # Class names of the dataset (6 classes)
+# These are used to confirm we found the correct directory
 MOCK_CATEGORIES = [
     "Cardboard",
     "Glass",
@@ -33,200 +33,257 @@ MOCK_CATEGORIES = [
 try:
     # Attempt to import the actual packages
     import tensorflow as tf
-    import numpy as np # Needed for image handling in predict.py
+    import numpy as np
     from tensorflow.keras.utils import image_dataset_from_directory
     
     print("TensorFlow data utilities available for use.")
 
 except ImportError:
-    # If TensorFlow/NumPy is not installed, define a robust mock
-    print("Warning: TensorFlow and NumPy not found. Using mock class/functions.")
-
+    print("TensorFlow or NumPy not found. Using mock data utilities.")
+    
+    # --- Mock objects for users without TensorFlow ---
     class MockTF:
-        """Mock object to simulate tensorflow package with necessary sub-modules."""
-        class random:
-            """Mock for tf.random to allow set_seed call."""
+        class MockKerasUtils:
+            def image_dataset_from_directory(self, *args, **kwargs):
+                print(f"Mock: Simulating data loading from {kwargs.get('directory', 'unknown')}")
+                class MockDataset:
+                    @property
+                    def class_names(self):
+                        return [c.capitalize() for c in MOCK_CATEGORIES] 
+                return MockDataset(), MockDataset()
+
+        class MockKeras:
+            utils = MockKerasUtils()
+            class MockLayer:
+                def __init__(self, *args, **kwargs): pass
+            
+            def Input(self, *args, **kwargs): return self.MockLayer()
+
+        def __init__(self):
+            self.keras = self.MockKeras()
+            self.random = self.MockRandom()
+            self.version = "2.x"
+
+        class MockRandom:
             def set_seed(self, seed):
-                print(f"Mock: tf.random.set_seed called with {seed}")
+                print(f"Mock: Setting random seed to {seed}")
+        
+    class MockNP:
+        def __init__(self): pass
+        def array(self, data): return data
+        def random_sample(self, size): return [0.5] * size
 
-        def image_dataset_from_directory(self, directory, labels, validation_split, subset, seed, image_size, batch_size, label_mode, **kwargs):
-            """Mock function to simulate data loading and return mock data structures."""
-            if subset == 'training':
-                num_files = 2023
-                subset_name = "Training"
-            else:
-                num_files = 505
-                subset_name = "Validation"
-                
-            print(f"\n--- Loading {subset_name} Data ---")
-            print(f"Mocking data loading from directory: {directory}...")
-            
-            # Simulate the classes found by the real function
-            inferred_classes = [c.lower() for c in MOCK_CATEGORIES]
-            
-            # The previous log indicated 7 files found before cleanup, 
-            # but after cleanup, it should be 6, so we ensure the mock reflects clean data.
-            print(f"Found 2528 files belonging to {len(inferred_classes)} classes.")
-            print(f"Using {num_files} files for {subset_name.lower()}.")
-            
-            # Simulate the output structure
-            class MockDataset:
-                """Mock dataset object."""
-                element_spec = None
-                class_names = inferred_classes
-            
-            return MockDataset()
-
-    def image_dataset_from_directory(*args, **kwargs):
-        """Wrapper for the MockTF method."""
-        mock_tf_instance = MockTF()
-        return mock_tf_instance.image_dataset_from_directory(*args, **kwargs)
-
-    # Define the global 'tf' object as a mock when import fails
     tf = MockTF()
-    np = type('MockNumpy', (object,), {'array': lambda x: x, 'expand_dims': lambda x, axis: x})() # Simple mock for numpy
+    np = MockNP()
 
 
-# --- Data Download and Extraction ---
+# --- Core Data Functions ---
 
-def cleanup_extracted_data():
-    """Removes unwanted folders (like __MACOSX) and files from the extracted directory."""
-    print("Starting data cleanup...")
-    # ... (Cleanup logic remains the same) ...
-    try:
-        data_path = DATA_DIR_RESIZED
-        # List items in the dataset directory
-        for item in os.listdir(data_path):
-            full_path = os.path.join(data_path, item)
-            
-            # Remove __MACOSX (and other hidden files/dirs starting with .)
-            if item.startswith('__MACOSX') or item.startswith('.'):
-                if os.path.isdir(full_path):
-                    print(f"Removing extraneous directory: {item}")
-                    shutil.rmtree(full_path)
-                elif os.path.isfile(full_path):
-                    print(f"Removing extraneous file: {item}")
-                    os.remove(full_path)
-        print("Data cleanup complete.")
-    except Exception as e:
-        print(f"Error during cleanup: {e}")
-
-
-def download_and_extract_data():
-    """
-    Downloads the zipped dataset from GitHub, handles nested zips,
-    and extracts the content to DATA_DIR_RESIZED.
-    """
-    print(f"Dataset not found at {DATA_DIR_RESIZED}. Starting download from GitHub...")
-
-    # 1. Create base directory
+def download_data():
+    """Downloads the dataset zip file from GitHub."""
     os.makedirs(DATA_DIR_BASE, exist_ok=True)
-
-    # 2. Download the main ZIP file
+    print(f"Downloading dataset from {GITHUB_ZIP_URL}...")
+    
     try:
         response = requests.get(GITHUB_ZIP_URL, stream=True)
         response.raise_for_status()
-        with open(ZIP_FILENAME, 'wb') as f:
+        with open(ZIP_FILENAME, 'wb') as file:
             for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print("Download successful. Starting extraction of main archive...")
+                file.write(chunk)
+        print(f"Download complete. File saved to {ZIP_FILENAME}")
+        return True
     except requests.exceptions.RequestException as e:
-        print(f"Error downloading data: {e}")
+        print(f"Error during download: {e}")
         return False
 
-    # 3. Handle Nested ZIP Extraction
-    try:
-        with zipfile.ZipFile(ZIP_FILENAME, 'r') as outer_zip:
-            # Look for the embedded dataset-resized.zip file
-            embedded_zip_name = None
-            for name in outer_zip.namelist():
-                if name.endswith('dataset-resized.zip'):
-                    embedded_zip_name = name
-                    break
-
-            if not embedded_zip_name:
-                print("Error: 'dataset-resized.zip' not found inside the main GitHub ZIP.")
-                return False
-
-            print(f"Found embedded data archive: {embedded_zip_name}. Reading its contents...")
-            
-            # Extract the embedded zip file to a temporary stream/location
-            with outer_zip.open(embedded_zip_name) as embedded_zip_file:
-                # Read the bytes of the embedded zip file
-                embedded_zip_bytes = embedded_zip_file.read()
-
-                # Open the embedded zip file from the bytes
-                with zipfile.ZipFile(io.BytesIO(embedded_zip_bytes), 'r') as inner_zip:
-                    # Create the target directory
-                    os.makedirs(DATA_DIR_RESIZED, exist_ok=True)
-                    
-                    # Extract contents of the inner zip to the target directory
-                    inner_zip.extractall(DATA_DIR_RESIZED)
-
-        print(f"Extraction complete. Dataset is ready at {DATA_DIR_RESIZED}")
-        
-        # 4. Perform cleanup (remove __MACOSX and other temporary files)
-        cleanup_extracted_data()
-
-        # 5. Clean up temporary files
+def cleanup_extracted_data():
+    """Removes the initial zip file and the top-level extracted folder if it exists."""
+    # Remove the zip file
+    if os.path.exists(ZIP_FILENAME):
         os.remove(ZIP_FILENAME)
 
-        return True
+    # Remove the temporary extraction directory (this handles all nested temp files)
+    temp_extract_dir = os.path.join(DATA_DIR_BASE, 'trashnet-master')
+    if os.path.exists(temp_extract_dir):
+        shutil.rmtree(temp_extract_dir)
 
+def find_inner_zip(root_dir, target_name="dataset-resized.zip"):
+    """Recursively searches for the inner dataset zip file."""
+    print(f"Searching for inner ZIP: '{target_name}' inside {root_dir}...")
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        if target_name in filenames:
+            return os.path.join(dirpath, target_name)
+    return None
+
+def find_dataset_root(root_dir):
+    """
+    Recursively searches for a directory containing all the MOCK_CATEGORIES folders.
+    Returns the path of the directory that is the true root of the class data.
+    """
+    expected_folders = set(c.lower() for c in MOCK_CATEGORIES)
+
+    print(f"Searching for 6 class folders inside: {root_dir}")
+    
+    # os.walk traverses the directory tree
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        # Convert directory names found at this level to a set of lowercase names
+        current_folders = set(d.lower() for d in dirnames)
+        
+        # Check if ALL expected class folders are present at this level
+        if expected_folders.issubset(current_folders):
+            print(f"Success! Found all 6 class folders inside: {dirpath}")
+            return dirpath # This is the path we want to move
+
+    return None
+
+def extract_data():
+    """Extracts the double-zipped file, finds the nested class data, and moves it to the final destination."""
+    
+    temp_extract_dir = os.path.join(DATA_DIR_BASE, 'trashnet-master')
+    inner_extract_dir = os.path.join(temp_extract_dir, 'inner_data_temp')
+    
+    try:
+        # 1. Extract Outer ZIP
+        with zipfile.ZipFile(ZIP_FILENAME, 'r') as zip_ref:
+            print(f"Extracting main ZIP to: {DATA_DIR_BASE}")
+            zip_ref.extractall(DATA_DIR_BASE)
+
+        # 2. Find Inner ZIP
+        inner_zip_path = find_inner_zip(temp_extract_dir)
+        if not inner_zip_path:
+            print("Error: Could not find the required 'dataset-resized.zip' file within the extracted structure.")
+            return False
+
+        print(f"Found inner dataset ZIP: {inner_zip_path}")
+        
+        # 3. Extract Inner ZIP
+        os.makedirs(inner_extract_dir, exist_ok=True)
+        print(f"Extracting inner dataset to: {inner_extract_dir}")
+        
+        with zipfile.ZipFile(inner_zip_path, 'r') as inner_zip_ref:
+            inner_zip_ref.extractall(inner_extract_dir)
+            
+        # 4. Find the actual root directory (the folder containing the six classes)
+        # Search inside the inner extraction directory
+        source_dir = find_dataset_root(inner_extract_dir) 
+        
+        if source_dir:
+            # 5. Move contents
+            # Ensure the final target directory exists
+            os.makedirs(DATA_DIR_RESIZED, exist_ok=True)
+            
+            print(f"Moving class folders from {source_dir} to {DATA_DIR_RESIZED}...")
+            
+            # Move contents (the six class folders)
+            for item in os.listdir(source_dir):
+                s = os.path.join(source_dir, item)
+                d = os.path.join(DATA_DIR_RESIZED, item)
+                
+                if os.path.isdir(s): # Only move the class folders
+                    # We use shutil.move to move the directory itself
+                    shutil.move(s, d)
+            
+            print("Dataset moved to correct structure.")
+            return True
+        else:
+            print("Error: Could not find the 6 class folders after extracting the inner ZIP.")
+            return False
+            
+
+    except zipfile.BadZipFile:
+        print(f"Error: A zip file is corrupted or bad.")
+        return False
     except Exception as e:
         print(f"Error during extraction: {e}")
         return False
+    finally:
+        # Clean up the zip file and all temporary extraction folders
+        cleanup_extracted_data()
 
 
 def load_and_prepare_data():
     """
-    Ensures data is present, then uses TensorFlow utilities (or mocks)
-    to create training and validation datasets.
+    Checks for data, downloads/extracts if missing, and loads the Keras Datasets.
+    
+    Returns: (train_ds, val_ds, class_names) or (None, None, None) on failure.
     """
-    # Check if data exists; if not, download it
+    # Check if the final structured data is present
     if not os.path.exists(DATA_DIR_RESIZED) or not os.listdir(DATA_DIR_RESIZED):
-        if not download_and_extract_data():
-            return None, None
-    else:
-        print(f"Dataset already found and structured at: {DATA_DIR_RESIZED}. Skipping download.")
+        print(f"Dataset not found at: {DATA_DIR_RESIZED}. Starting download/extraction process.")
         
-        # Ensure cleanup runs even if data was already present, just in case
-        cleanup_extracted_data()
-
+        if not download_data():
+            print("Aborting data preparation due to download failure.")
+            return None, None, None
+            
+        if not extract_data():
+            print("Aborting data preparation due to extraction failure.")
+            return None, None, None
+    else:
+        print(f"Dataset already found and structured at: {DATA_DIR_RESIZED}. Skipping download/extraction.")
+        
     # --- Data Loading Configuration uses global constants now ---
     
-    # 1. Load Training Dataset
-    train_ds = tf.keras.utils.image_dataset_from_directory(
-        DATA_DIR_RESIZED,
-        labels='inferred',
-        validation_split=VALIDATION_SPLIT,
-        subset="training",
-        seed=SEED,
-        image_size=IMAGE_SIZE,
-        batch_size=BATCH_SIZE,
-        label_mode='categorical'
-    )
+    # Check if real TF is available before attempting to load datasets
+    if not hasattr(tf.keras.utils, 'image_dataset_from_directory'):
+        print("Mock: Skipping Keras data loading as TensorFlow is not installed.")
+        # Return mock datasets and mock class names for the mock training function
+        mock_ds, _ = tf.keras.utils.MockKerasUtils().image_dataset_from_directory()
+        return mock_ds, mock_ds, mock_ds.class_names
     
-    # 2. Load Validation Dataset
-    val_ds = tf.keras.utils.image_dataset_from_directory(
-        DATA_DIR_RESIZED,
-        labels='inferred',
-        validation_split=VALIDATION_SPLIT,
-        subset="validation",
-        seed=SEED,
-        image_size=IMAGE_SIZE,
-        batch_size=BATCH_SIZE,
-        label_mode='categorical'
-    )
+    # --- Try/Except Block for Keras Data Loading ---
+    try:
+        # 1. Load Training Dataset
+        train_ds = tf.keras.utils.image_dataset_from_directory(
+            DATA_DIR_RESIZED,
+            labels='inferred',
+            validation_split=VALIDATION_SPLIT,
+            subset="training",
+            seed=SEED,
+            image_size=IMAGE_SIZE,
+            batch_size=BATCH_SIZE,
+            label_mode='categorical'
+        )
+        
+        # 2. Load Validation Dataset
+        val_ds = tf.keras.utils.image_dataset_from_directory(
+            DATA_DIR_RESIZED,
+            labels='inferred',
+            validation_split=VALIDATION_SPLIT,
+            subset="validation",
+            seed=SEED,
+            image_size=IMAGE_SIZE,
+            batch_size=BATCH_SIZE,
+            label_mode='categorical'
+        )
 
-    # Print inferred class names (useful for debugging)
-    if hasattr(train_ds, 'class_names'):
-        print(f"\nInferred Class Names: {[c.lower() for c in train_ds.class_names]}")
+        # --- CRITICAL FIX: Extract class names BEFORE performance optimization ---
+        class_names = []
+        if hasattr(train_ds, 'class_names'):
+            class_names = train_ds.class_names
+            print(f"\nInferred Class Names: {[c.lower() for c in class_names]}")
+        else:
+             print("Error: train_ds object is missing the 'class_names' attribute right after creation.")
+             return None, None, None # Failure after creation
 
-    print("\nData loading complete. Ready for model training.")
-    return train_ds, val_ds
-    
-# Allow direct execution to confirm data presence
-if __name__ == "__main__":
-    print("Attempting to ensure data is present for use in other scripts.")
-    load_and_prepare_data()
+        print("\nData loading complete.")
+        
+        # --- Performance Optimization (These steps remove the class_names attribute) ---
+        AUTOTUNE = tf.data.AUTOTUNE
+        train_ds = train_ds.cache().shuffle(1000).prefetch(buffer_size=AUTOTUNE)
+        val_ds = val_ds.cache().prefetch(buffer_size=AUTOTUNE)
+
+        # Return the new, optimized datasets *and* the class names list
+        return train_ds, val_ds, class_names
+
+    except Exception as e:
+        # Catch any failure during the Keras setup process
+        print(f"FATAL ERROR during Keras dataset creation: {e}")
+        return None, None, None
+
+
+if __name__ == '__main__':
+    # Run data preparation directly to check if the data pipeline is working
+    if load_and_prepare_data() != (None, None, None):
+        print("Data preparation successful!")
+    else:
+        print("Data preparation failed.")
