@@ -4,29 +4,46 @@ import json
 import base64
 import io
 import logging
-from data_prep import IMAGE_SIZE, MOCK_CATEGORIES, tf, np
+# We rely on data_prep to provide the constants: IMAGE_SIZE, MOCK_CATEGORIES, tf, np
+from data_prep import IMAGE_SIZE, MOCK_CATEGORIES, tf, np 
 from log_config import initialize_logger # Import the function
 
-# --- Configuration ---
+# Initialize the logger at the start
+logger = initialize_logger()
 
+# --- Configuration ---\r
 # **CRITICAL FIX: Determine the absolute path of the model file**
-# This ensures the model is found even when executed from a different directory (like test/).
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_FILE_NAME = 'trashnet_classifier.keras'
-MODEL_PATH = os.path.join(BASE_DIR, MODEL_FILE_NAME)
 
-TEST_IMAGE_PATH = None  # Leave as None to auto-select a random image
+# 1. Update MODEL_FILE_NAME to match the trained biomedical waste model
+MODEL_FILE_NAME = 'biomedical_waste_classifier.keras' 
+
+MODEL_PATH = os.path.join(BASE_DIR, MODEL_FILE_NAME)
 TARGET_IMAGE_FORMAT = IMAGE_SIZE + (3,) # (224, 224, 3)
 
 # Check if we are running the real TensorFlow environment
 IS_REAL_TF = hasattr(tf, 'version')
 
+# Global variable to hold the loaded model
+model = None
+
 if IS_REAL_TF:
     # Only import necessary Keras components if the real TF is available
     from tensorflow.keras.models import load_model
-    # We use PIL's Image module to handle Base64 decoding and resizing
+    from tensorflow.keras.preprocessing import image as keras_image_processing
     from PIL import Image
+    logger.info("TensorFlow utilities imported successfully for prediction.")
     
+    # Pre-load the model globally to avoid loading it on every request (crucial for FaaS performance)
+    try:
+        if os.path.exists(MODEL_PATH):
+            model = load_model(MODEL_PATH)
+            logger.info(f"Model successfully loaded from: {MODEL_PATH}")
+        else:
+            logger.error(f"MODEL NOT FOUND at {MODEL_PATH}. Prediction will fail.")
+    except Exception as e:
+        logger.error(f"Failed to load model from {MODEL_PATH}: {e}")
+        
 else:
     # Define a robust mock for the Image module if not running real TF
     class MockImage:
@@ -34,147 +51,130 @@ else:
         def open(fp):
             class MockImg:
                 def resize(self, size): return self
-                def getdata(self): return np.zeros(IMAGE_SIZE[0] * IMAGE_SIZE[1] * 3) # Mock pixel data
+                def getdata(self): return np.zeros(IMAGE_SIZE + (3,))
+                def convert(self, mode): return self
             return MockImg()
-    Image = MockImage
-
-# --- Logging Setup ---
-# Initialize and get the configured logger instance from the external module
-# We use the full module path (__name__) for the logger name for clarity
-logger = initialize_logger(log_name=__name__)
-
-
-# --- Image Preprocessing ---
-
-def preprocess_b64_image(image_b64: str):
-    """
-    Decodes a Base64 string, converts it to an image, resizes it,
-    and converts it to a NumPy array for model prediction.
-    """
-    logger.info("Attempting to decode Base64 image and preprocess...")
     
+    Image = MockImage # Use the mock class
+    logger.warning("Warning: Real TensorFlow libraries not found. Using mock utilities for prediction.")
+
+
+# --- Prediction Helper Functions ---
+
+def load_and_preprocess_image(image_b64):
+    """
+    Decodes a base64 string, loads it into a PIL Image object, 
+    resizes it, and converts it to a NumPy array for prediction.
+    """
     if not image_b64:
-        logger.error("Input image_b64 string is empty.")
+        logger.error("No image data provided.")
         return None
-    
+
     try:
-        # 1. Decode Base64 string to bytes
+        # Decode the base64 string
         image_bytes = base64.b64decode(image_b64)
+        image_stream = io.BytesIO(image_bytes)
         
-        # 2. Open image from bytes stream (using PIL/MockImage)
-        img = Image.open(io.BytesIO(image_bytes))
-        
-        # 3. Resize to model's required input size
+        # Open and resize the image
+        img = Image.open(image_stream).convert('RGB')
         img = img.resize(IMAGE_SIZE)
-        
-        # Convert to NumPy array
-        img_array = np.array(img, dtype='float32')
-        
-        # Check if we have 3 color channels (RGB)
-        if img_array.ndim == 2: # Grayscale image
-            logger.warning("Image is grayscale. Expanding to 3 channels.")
-            img_array = np.stack([img_array]*3, axis=-1)
-        elif img_array.shape[-1] == 4: # RGBA image
-            logger.warning("Image has alpha channel. Removing it.")
-            img_array = img_array[..., :3]
 
-        # Expand dimensions to create a batch size of 1
-        # Shape: (224, 224, 3) -> (1, 224, 224, 3)
-        img_array = np.expand_dims(img_array, axis=0)
+        # Convert to NumPy array and normalize for MobileNetV2 preprocessing: [0, 255] -> [-1, 1]
+        img_array = np.array(img, dtype=np.float32)
         
-        logger.info(f"Image preprocessed successfully. Array shape: {img_array.shape}")
-        return img_array.astype('float32')
-        
+        # MobileNetV2 normalization: (image / 127.5) - 1
+        img_array = (img_array / 127.5) - 1.0
+
+        # Add batch dimension (224, 224, 3) -> (1, 224, 224, 3)
+        processed_img = np.expand_dims(img_array, axis=0)
+
+        logger.debug("Image decoded and preprocessed successfully.")
+        return processed_img
+
     except Exception as e:
-        logger.error(f"Error during image decoding/preprocessing: {e}")
+        logger.error(f"Error during image loading/preprocessing: {e}")
         return None
 
-# --- Main Prediction Function ---
+# --- Main FaaS Handler ---
 
-# Load model globally once to save time on subsequent calls
-_model = None
-
-def get_model():
-    """Loads the model once and caches it."""
-    global _model
-    if _model is not None:
-        return _model
-        
-    # Check using the absolute path
-    if not os.path.exists(MODEL_PATH):
-        logger.critical(f"Model file not found at expected path: '{MODEL_PATH}'. Prediction cannot proceed.")
-        return None
-
-    if IS_REAL_TF:
-        try:
-            # Load the model (including custom augmentation layers)
-            _model = load_model(MODEL_PATH)
-            logger.info("Keras model loaded successfully.")
-        except Exception as e:
-            logger.critical(f"Error loading Keras model: {e}")
-            _model = None
-    else:
-        logger.info(f"Mock: Loading mock model from {MODEL_PATH}")
-        # Mock prediction function
-        def mock_predict(*args, **kwargs):
-            # Simulate a reasonable probability distribution based on the 6 classes
-            return np.array([[0.3247, 0.1062, 0.1287, 0.0723, 0.0135, 0.3546]])
-
-        class MockModel:
-            def predict(self, *args, **kwargs):
-                return mock_predict(*args, **kwargs)
-        
-        _model = MockModel()
-
-    return _model
-
-def handle(image_b64: str) -> str:
+def handle(req):
     """
-    Classifies a waste image provided as a Base64 string and returns a JSON result string.
+    Handles the incoming HTTP request (JSON body containing base64 image).
     
     Args:
-        image_b64: The Base64 encoded string of the image.
+        req (str): JSON string containing the base64 image data under the key 'image_b64'.
         
     Returns:
-        A JSON string containing the classification result and probability breakdown.
+        str: JSON string containing the classification result or an error message.
     """
-    logger.info("--- Starting Classification Request ---")
-    model = get_model()
     
-    if model is None:
+    # 1. Check for Model Readiness
+    if IS_REAL_TF and model is None:
         return json.dumps({
             "status": "error",
-            "message": "Model not loaded. Check server logs for details."
+            "message": "Model not loaded. Check model path and TensorFlow installation."
         })
-
-    # 1. Preprocess the image from Base64
-    processed_img = preprocess_b64_image(image_b64)
-    if processed_img is None:
-        return json.dumps({
-            "status": "error",
-            "message": "Failed to decode or preprocess image."
-        })
-
-    # 2. Predict
+    
     try:
-        # Note: verbose=0 suppresses the training progress bar
-        predictions = model.predict(processed_img, verbose=0)
-        
-        # 3. Process results
-        probabilities = predictions[0]
-        predicted_index = np.argmax(probabilities)
-        
-        result_breakdown = {}
-        for i, name in enumerate(MOCK_CATEGORIES):
-            # FIX: Convert np.float32 to standard Python float before placing in dictionary
-            # The float() casting resolves the JSON serialization error.
-            result_breakdown[name] = float(round(probabilities[i] * 100, 2))
-        
-        predicted_class = MOCK_CATEGORIES[predicted_index]
-        # FIX: Convert the confidence value to a standard Python float as well
-        confidence = float(result_breakdown[predicted_class])
+        # 2. Parse the Request
+        input_data = json.loads(req)
+        image_b64 = input_data.get("image_b64")
 
-        # 4. Pack results into a single JSON object
+        if not image_b64:
+            logger.warning("Received request with no 'image_b64' key.")
+            return json.dumps({
+                "status": "error",
+                "message": "Missing 'image_b64' field in the request body."
+            })
+            
+    except json.JSONDecodeError:
+        logger.error("Failed to decode input JSON string.")
+        return json.dumps({
+            "status": "error",
+            "message": "Invalid JSON input."
+        })
+    except Exception as e:
+        logger.error(f"Error during request parsing: {e}")
+        return json.dumps({
+            "status": "error",
+            "message": f"Error parsing request: {str(e)}"
+        })
+        
+    # 3. Preprocess Image
+    processed_img = load_and_preprocess_image(image_b64)
+    if processed_img is None:
+        # load_and_preprocess_image logs the error.
+        return json.dumps({
+            "status": "error",
+            "message": "Failed to decode or preprocess image data."
+        })
+
+    try:
+        # 4. Predict
+        if IS_REAL_TF:
+            predictions = model.predict(processed_img, verbose=0)
+        else:
+            # Mock prediction (returns dummy probabilities, e.g., highest chance for the 2nd class)
+            num_classes = len(MOCK_CATEGORIES)
+            mock_probs = [0.0] * num_classes
+            mock_probs[1] = 0.95 # Mock prediction for the second class
+            predictions = np.array([mock_probs], dtype=np.float32) # Ensure mock output is also float32
+
+        # 5. Process results
+        predicted_index = np.argmax(predictions[0])
+        
+        # We rely on MOCK_CATEGORIES (from data_prep) for the class names
+        predicted_class = MOCK_CATEGORIES[predicted_index] 
+        # Convert confidence to standard float before formatting
+        confidence = float(predictions[0][predicted_index]) * 100
+
+        # Create the probability breakdown for the JSON response
+        result_breakdown = {}
+        for name, prob in zip(MOCK_CATEGORIES, predictions[0]):
+            # CRITICAL FIX: Explicitly cast np.float32 (prob) to standard Python float
+            result_breakdown[name] = float(f"{float(prob)*100:.2f}")
+
+        # 6. Format JSON Response
         result_json = {
             "status": "success",
             "classification": predicted_class,
@@ -185,6 +185,7 @@ def handle(image_b64: str) -> str:
         logger.info(f"Classification successful: {predicted_class} with {confidence:.2f}% confidence.")
         logger.debug(f"Full breakdown: {result_breakdown}")
         
+        # This will now succeed because all numerical values are standard Python types
         return json.dumps(result_json)
             
     except Exception as e:
@@ -204,9 +205,5 @@ if __name__ == "__main__":
     DUMMY_B64_IMAGE = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
     
     # Run the handler and print the final JSON result
-    result = handle(DUMMY_B64_IMAGE)
-    
-    # Pretty print the JSON output for readability
-    print("\n--- API Response JSON ---")
-    print(json.dumps(json.loads(result), indent=4))
-    print("-------------------------")
+    result = handle(json.dumps({"image_b64": DUMMY_B64_IMAGE}))
+    print("Test Result:", result)

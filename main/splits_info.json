@@ -1,0 +1,19 @@
+{
+  "classes": [
+    "(BT) Body Tissue or Organ",
+    "(GE) Glass equipment-packaging 551",
+    "(ME) Metal equipment -packaging",
+    "(OW) Organic wastes",
+    "(PE) Plastic equipment-packaging",
+    "(PP) Paper equipment-packaging",
+    "(SN) Syringe needles",
+    "Gauze",
+    "Gloves",
+    "Mask",
+    "Syringe",
+    "Tweezers"
+  ],
+  "train_count": 4471,
+  "val_count": 788,
+  "test_count": 1327
+}
