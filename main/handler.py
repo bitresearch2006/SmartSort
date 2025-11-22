@@ -4,47 +4,65 @@ import json
 import base64
 import io
 import logging
-# We rely on data_prep to provide the constants: IMAGE_SIZE, MOCK_CATEGORIES, tf, np
-from data_prep import IMAGE_SIZE, MOCK_CATEGORIES, tf, np 
+import numpy as np
+# Use modular configuration instead of data_prep dependency
+from config_loader import load_categories, get_image_size, get_model_config
 from log_config import initialize_logger # Import the function
 
 # Initialize the logger at the start
 logger = initialize_logger()
 
-# --- Configuration ---\r
+# --- Configuration ---
 # **CRITICAL FIX: Determine the absolute path of the model file**
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 1. Update MODEL_FILE_NAME to match the trained biomedical waste model
-MODEL_FILE_NAME = 'biomedical_waste_classifier.keras' 
+# Load configuration from JSON files
+CATEGORIES = load_categories()
+IMAGE_SIZE = get_image_size()
+MODEL_CONFIG = get_model_config()
 
+# Model configuration
+MODEL_FILE_NAME = MODEL_CONFIG.get('name', 'biomedical_waste_classifier.keras')
 MODEL_PATH = os.path.join(BASE_DIR, MODEL_FILE_NAME)
 TARGET_IMAGE_FORMAT = IMAGE_SIZE + (3,) # (224, 224, 3)
 
-# Check if we are running the real TensorFlow environment
-IS_REAL_TF = hasattr(tf, 'version')
+# Try to import TensorFlow and check availability
+try:
+    import tensorflow as tf
+    IS_REAL_TF = hasattr(tf, 'version')
+except ImportError:
+    tf = None
+    IS_REAL_TF = False
 
 # Global variable to hold the loaded model
 model = None
 
 if IS_REAL_TF:
     # Only import necessary Keras components if the real TF is available
-    from tensorflow.keras.models import load_model
-    from tensorflow.keras.preprocessing import image as keras_image_processing
-    from PIL import Image
-    logger.info("TensorFlow utilities imported successfully for prediction.")
-    
-    # Pre-load the model globally to avoid loading it on every request (crucial for FaaS performance)
     try:
-        if os.path.exists(MODEL_PATH):
-            model = load_model(MODEL_PATH)
-            logger.info(f"Model successfully loaded from: {MODEL_PATH}")
-        else:
-            logger.error(f"MODEL NOT FOUND at {MODEL_PATH}. Prediction will fail.")
-    except Exception as e:
-        logger.error(f"Failed to load model from {MODEL_PATH}: {e}")
+        from tensorflow.keras.models import load_model
+        from tensorflow.keras.preprocessing import image as keras_image_processing
+        from PIL import Image
+        logger.info("TensorFlow utilities imported successfully for prediction.")
         
-else:
+        # Pre-load the model globally to avoid loading it on every request (crucial for FaaS performance)
+        model = None
+        try:
+            if os.path.exists(MODEL_PATH):
+                model = load_model(MODEL_PATH)
+                logger.info(f"Model successfully loaded from: {MODEL_PATH}")
+            else:
+                logger.error(f"MODEL NOT FOUND at {MODEL_PATH}. Prediction will fail.")
+        except Exception as e:
+            logger.error(f"Failed to load model from {MODEL_PATH}: {e}")
+            model = None
+            
+    except ImportError as e:
+        logger.error(f"Failed to import TensorFlow components: {e}")
+        IS_REAL_TF = False
+        model = None
+        
+if not IS_REAL_TF:
     # Define a robust mock for the Image module if not running real TF
     class MockImage:
         @staticmethod
@@ -56,6 +74,7 @@ else:
             return MockImg()
     
     Image = MockImage # Use the mock class
+    model = None
     logger.warning("Warning: Real TensorFlow libraries not found. Using mock utilities for prediction.")
 
 
@@ -79,12 +98,10 @@ def load_and_preprocess_image(image_b64):
         img = Image.open(image_stream).convert('RGB')
         img = img.resize(IMAGE_SIZE)
 
-        # Convert to NumPy array and normalize for MobileNetV2 preprocessing: [0, 255] -> [-1, 1]
+        # Convert to NumPy array - keep original [0, 255] range
+        # The model's Rescaling layer will handle normalization to [-1, 1]
         img_array = np.array(img, dtype=np.float32)
         
-        # MobileNetV2 normalization: (image / 127.5) - 1
-        img_array = (img_array / 127.5) - 1.0
-
         # Add batch dimension (224, 224, 3) -> (1, 224, 224, 3)
         processed_img = np.expand_dims(img_array, axis=0)
 
@@ -155,7 +172,7 @@ def handle(req):
             predictions = model.predict(processed_img, verbose=0)
         else:
             # Mock prediction (returns dummy probabilities, e.g., highest chance for the 2nd class)
-            num_classes = len(MOCK_CATEGORIES)
+            num_classes = len(CATEGORIES)
             mock_probs = [0.0] * num_classes
             mock_probs[1] = 0.95 # Mock prediction for the second class
             predictions = np.array([mock_probs], dtype=np.float32) # Ensure mock output is also float32
@@ -163,14 +180,14 @@ def handle(req):
         # 5. Process results
         predicted_index = np.argmax(predictions[0])
         
-        # We rely on MOCK_CATEGORIES (from data_prep) for the class names
-        predicted_class = MOCK_CATEGORIES[predicted_index] 
+        # Use the loaded CATEGORIES for class names
+        predicted_class = CATEGORIES[predicted_index] 
         # Convert confidence to standard float before formatting
         confidence = float(predictions[0][predicted_index]) * 100
 
         # Create the probability breakdown for the JSON response
         result_breakdown = {}
-        for name, prob in zip(MOCK_CATEGORIES, predictions[0]):
+        for name, prob in zip(CATEGORIES, predictions[0]):
             # CRITICAL FIX: Explicitly cast np.float32 (prob) to standard Python float
             result_breakdown[name] = float(f"{float(prob)*100:.2f}")
 

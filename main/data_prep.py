@@ -4,37 +4,30 @@ import zipfile
 import shutil
 import io # Needed for nested zip handling (kept for robustness)
 import glob # Needed for flexible data flattening
+import json
+from datetime import datetime
 
-# --- Configuration (Global Constants) ---
-# New data directory configuration
-DATA_DIR_BASE = 'biomedical_data'
-# The directory where the flattened, Keras-ready dataset will be placed
-DATA_DIR_RESIZED = os.path.join("..", "data", "biomedical_dataset_FLAT") 
-# Assuming the raw, unzipped folder structure is in ..\data\biomedical_dataset
-RAW_DATA_DIR = os.path.join("..", "data", "biomedical_dataset")
+# Use modular configuration
+from config_loader import (
+    get_data_config, get_model_config, get_image_size, 
+    update_categories, load_categories
+)
 
-SEED = 42 # Used for reproducibility
+# Load configuration from JSON files
+DATA_CONFIG = get_data_config()
+MODEL_CONFIG = get_model_config()
 
-# Image and Data Loading Configuration
-IMAGE_SIZE = (224, 224)
-BATCH_SIZE = 32
-VALIDATION_SPLIT = 0.2
+# Extract configuration values
+DATA_DIR_RESIZED = DATA_CONFIG.get('processed_data_dir', "../data/biomedical_dataset_FLAT")
+RAW_DATA_DIR = DATA_CONFIG.get('raw_data_dir', "../data/biomedical_dataset")
+IMAGE_SIZE = get_image_size()
+BATCH_SIZE = MODEL_CONFIG.get('batch_size', 32)
+VALIDATION_SPLIT = MODEL_CONFIG.get('validation_split', 0.2)
+SEED = MODEL_CONFIG.get('seed', 42)
+CATEGORIES_JSON_FILE = DATA_CONFIG.get('categories_file', 'categories.json')
 
-# Class names found from your training run (12 classes)
-MOCK_CATEGORIES = [
-    '(BT) Body Tissue or Organ', 
-    '(GE) Glass equipment-packaging 551', 
-    '(ME) Metal equipment -packaging', 
-    '(OW) Organic wastes', 
-    '(PE) Plastic equipment-packaging', 
-    '(PP) Paper equipment-packaging', 
-    '(SN) Syringe needles', 
-    'Gauze', 
-    'Gloves', 
-    'Mask', 
-    'Syringe', 
-    'Tweezers'
-]
+# Categories will be dynamically detected and updated
+MOCK_CATEGORIES = []
 
 # --- Dependency Handling (Mocking for portability) ---
 try:
@@ -100,33 +93,185 @@ except (ImportError, AttributeError):
     IS_REAL_TF = False
 
 
+# --- Categories Management Functions ---
+
+def count_images_per_category(source_dir, categories):
+    """
+    Count the number of images in each category directory.
+    
+    Args:
+        source_dir (str): Path to the source data directory
+        categories (list): List of category names
+        
+    Returns:
+        dict: Dictionary with category names as keys and image counts as values
+    """
+    category_counts = {}
+    total_images = 0
+    
+    for category in categories:
+        category_path = os.path.join(source_dir, category)
+        if os.path.exists(category_path):
+            count = 0
+            # Count image files recursively
+            for root, _, files in os.walk(category_path):
+                for filename in files:
+                    if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                        count += 1
+            category_counts[category] = count
+            total_images += count
+            print(f"   📊 {category}: {count} images")
+        else:
+            category_counts[category] = 0
+            print(f"   ⚠️  {category}: Directory not found")
+    
+    print(f"   📈 Total images: {total_images}")
+    return category_counts, total_images
+
+def save_categories_to_json(categories, file_path=CATEGORIES_JSON_FILE):
+    """
+    Save the detected categories to a JSON file with metadata and image counts.
+    
+    Args:
+        categories (list): List of category names
+        file_path (str): Path to save the JSON file
+    """
+    print(f"📊 Counting images per category...")
+    category_counts, total_images = count_images_per_category(RAW_DATA_DIR, categories)
+    
+    categories_data = {
+        "categories": categories,
+        "num_classes": len(categories),
+        "total_images": total_images,
+        "category_counts": category_counts,
+        "last_updated": datetime.now().isoformat(),
+        "source_directory": RAW_DATA_DIR,
+        "description": "Biomedical waste classification categories detected during data preparation"
+    }
+    
+    try:
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(categories_data, f, indent=2, ensure_ascii=False)
+        print(f"✅ Categories saved to {file_path}")
+        print(f"   - Number of categories: {len(categories)}")
+        print(f"   - Total images: {total_images}")
+        print(f"   - Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    except Exception as e:
+        print(f"❌ Error saving categories to JSON: {e}")
+
+def load_categories_from_json(file_path=CATEGORIES_JSON_FILE):
+    """
+    Load categories from JSON file.
+    
+    Args:
+        file_path (str): Path to the JSON file
+        
+    Returns:
+        list: List of category names, or empty list if file doesn't exist
+    """
+    if not os.path.exists(file_path):
+        print(f"📋 Categories JSON file not found: {file_path}")
+        return []
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            categories_data = json.load(f)
+        
+        categories = categories_data.get('categories', [])
+        print(f"✅ Categories loaded from {file_path}")
+        print(f"   - Number of categories: {len(categories)}")
+        print(f"   - Created: {categories_data.get('created_date', 'Unknown')}")
+        print(f"   - Categories: {categories}")
+        
+        return categories
+    except Exception as e:
+        print(f"❌ Error loading categories from JSON: {e}")
+        return []
+
+def detect_categories_from_directory(source_dir):
+    """
+    Detect category names from directory structure.
+    
+    Args:
+        source_dir (str): Path to the source data directory
+        
+    Returns:
+        list: List of detected category names
+    """
+    if not os.path.exists(source_dir):
+        print(f"❌ Source directory not found: {source_dir}")
+        return []
+    
+    try:
+        # Get all subdirectories as categories
+        categories = [d for d in os.listdir(source_dir) 
+                     if os.path.isdir(os.path.join(source_dir, d))]
+        categories.sort()  # Sort for consistency
+        
+        print(f"🔍 Detected {len(categories)} categories from directory structure:")
+        for i, category in enumerate(categories, 1):
+            print(f"   {i:2d}. {category}")
+        
+        return categories
+    except Exception as e:
+        print(f"❌ Error detecting categories: {e}")
+        return []
+
+def update_categories():
+    """
+    Update the global MOCK_CATEGORIES by always scanning the current directory structure.
+    This ensures the JSON file reflects the actual current dataset.
+    """
+    global MOCK_CATEGORIES
+    
+    print("\n🏷️  CATEGORY MANAGEMENT")
+    print("=" * 50)
+    
+    # Always detect categories from the current directory structure
+    print("🔍 Scanning directory structure for current categories...")
+    categories = detect_categories_from_directory(RAW_DATA_DIR)
+    
+    if categories:
+        # Always update/create the JSON file with current data
+        print("� Updating categories JSON with current dataset structure...")
+        save_categories_to_json(categories)
+        
+        # Update global categories
+        MOCK_CATEGORIES = categories
+        print(f"✅ Categories updated successfully: {len(categories)} categories found")
+        return True
+    else:
+        print("❌ No categories could be detected from directory structure!")
+        print(f"   Please check if the directory exists: {RAW_DATA_DIR}")
+        MOCK_CATEGORIES = []
+        return False
+
 # --- Data Preparation Functions ---
 
 def flatten_dataset_structure(source_dir, target_dir):
     """
     Copies all image files from nested subdirectories into a flat Keras-compatible structure:
     target_dir/class_name/image_name.jpg
-    This function detects classes based on the folders in the raw data directory.
+    This function uses the global MOCK_CATEGORIES for class names.
     """
-    print(f"\n--- Flattening Dataset Structure for Keras compatibility (Flexible Search) ---")
+    print(f"\n📁 FLATTENING DATASET STRUCTURE")
+    print("=" * 50)
     
     # Clean up existing flat directory
     if os.path.exists(target_dir):
-        print(f"Removing existing flat directory: {target_dir}")
+        print(f"🗑️  Removing existing flat directory: {target_dir}")
         shutil.rmtree(target_dir, ignore_errors=True)
     
     os.makedirs(target_dir, exist_ok=True)
     
     total_files_moved = 0
-    # Search for all subdirectories in the raw data directory (e.g., 'Gloves', 'Mask')
-    raw_class_dirs = [d for d in os.listdir(source_dir) if os.path.isdir(os.path.join(source_dir, d))]
     
-    # 1. Update MOCK_CATEGORIES globally based on the detected directories
-    global MOCK_CATEGORIES
-    if raw_class_dirs:
-        MOCK_CATEGORIES = raw_class_dirs
+    # Use the global MOCK_CATEGORIES (should be set by update_categories())
+    if not MOCK_CATEGORIES:
+        print("❌ No categories available for flattening!")
+        return 0
         
-    for class_name in raw_class_dirs:
+    for class_name in MOCK_CATEGORIES:
         raw_class_path = os.path.join(source_dir, class_name)
         
         # Create the corresponding directory in the target FLAT structure
@@ -148,9 +293,15 @@ def flatten_dataset_structure(source_dir, target_dir):
                     except Exception as e:
                         print(f"Error copying {source_file}: {e}")
 
-        print(f"Processing category: {class_name}")
+        print(f"📂 Processing category: {class_name}")
 
-    print(f"--- Flattening Complete. Total files moved: {total_files_moved} ---")
+    print(f"✅ Flattening Complete. Total files moved: {total_files_moved}")
+    
+    # Update categories JSON with current statistics
+    if total_files_moved > 0:
+        save_categories_to_json(MOCK_CATEGORIES)
+    
+    return total_files_moved
 
 def cleanup_extracted_data():
     """Removes the temporary extracted data directory."""
@@ -162,18 +313,28 @@ def load_and_prepare_data():
     Entry point for data loading. Handles data structure flattening 
     and returns TensorFlow datasets (or mocks).
     """
-    print(f"Attempting to load data from {RAW_DATA_DIR}...")
+    print(f"\n🚀 STARTING DATA PREPARATION")
+    print("=" * 60)
+    print(f"📂 Source directory: {RAW_DATA_DIR}")
+    print(f"📁 Target directory: {DATA_DIR_RESIZED}")
     
     # Check if the raw data directory exists
     if not os.path.exists(RAW_DATA_DIR):
-        print(f"Error: Raw data directory not found at {RAW_DATA_DIR}. Cannot proceed.")
+        print(f"❌ Raw data directory not found at {RAW_DATA_DIR}")
         print("Please ensure your 'biomedical_dataset' folder is correctly placed in the 'data' directory.")
         return None, None
     
-    print("\n--- Starting Data Preparation for Biomedical Dataset ---")
+    # 1. Update categories (load from JSON or detect from directories)
+    if not update_categories():
+        print("❌ Failed to update categories. Aborting data preparation.")
+        return None, None
     
-    # 1. Ensure Keras-compatible structure exists (Flatten the data)
-    flatten_dataset_structure(RAW_DATA_DIR, DATA_DIR_RESIZED)
+    # 2. Ensure Keras-compatible structure exists (Flatten the data)
+    total_files = flatten_dataset_structure(RAW_DATA_DIR, DATA_DIR_RESIZED)
+    
+    if total_files == 0:
+        print("❌ No files were processed during flattening.")
+        return None, None
     
     # 2. Recheck classes using the globally updated list
     num_classes = len(MOCK_CATEGORIES)

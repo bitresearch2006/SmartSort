@@ -1,3 +1,6 @@
 tensorflow
 numpy
 Pillow
+matplotlib
+requests
+opencv-python

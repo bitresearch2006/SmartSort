@@ -1,0 +1,35 @@
+{
+  "categories": [
+    "(BT) Body Tissue or Organ",
+    "(GE) Glass equipment-packaging 551",
+    "(ME) Metal equipment -packaging",
+    "(OW) Organic wastes",
+    "(PE) Plastic equipment-packaging",
+    "(PP) Paper equipment-packaging",
+    "(SN) Syringe needles",
+    "Gauze",
+    "Gloves",
+    "Mask",
+    "Syringe",
+    "Tweezers"
+  ],
+  "num_classes": 12,
+  "total_images": 6586,
+  "category_counts": {
+    "(BT) Body Tissue or Organ": 515,
+    "(GE) Glass equipment-packaging 551": 551,
+    "(ME) Metal equipment -packaging": 500,
+    "(OW) Organic wastes": 585,
+    "(PE) Plastic equipment-packaging": 558,
+    "(PP) Paper equipment-packaging": 513,
+    "(SN) Syringe needles": 595,
+    "Gauze": 567,
+    "Gloves": 543,
+    "Mask": 529,
+    "Syringe": 569,
+    "Tweezers": 561
+  },
+  "last_updated": "2025-11-22T17:00:41.593456",
+  "source_directory": "../data/biomedical_dataset",
+  "description": "Biomedical waste classification categories detected during data preparation"
+}

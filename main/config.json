@@ -1,0 +1,38 @@
+{
+  "project": {
+    "name": "SmartSort",
+    "description": "Biomedical Waste Classification System",
+    "version": "1.0.0"
+  },
+  "model": {
+    "name": "biomedical_waste_classifier.keras",
+    "architecture": "MobileNetV2",
+    "image_size": [224, 224],
+    "input_channels": 3,
+    "learning_rate": 0.0001,
+    "epochs": 10,
+    "batch_size": 32,
+    "validation_split": 0.2,
+    "seed": 42
+  },
+  "data": {
+    "raw_data_dir": "../data/biomedical_dataset",
+    "processed_data_dir": "../data/biomedical_dataset_FLAT",
+    "categories_file": "categories.json"
+  },
+  "training": {
+    "early_stopping_patience": 3,
+    "data_augmentation": {
+      "random_flip": "horizontal",
+      "random_rotation": 0.2,
+      "random_zoom": 0.2,
+      "random_contrast": 0.2,
+      "random_brightness": 0.2
+    },
+    "dropout_rate": 0.3
+  },
+  "deployment": {
+    "log_level": "INFO",
+    "metrics_dir": "./metrics"
+  }
+}

@@ -1,32 +1,54 @@
 import os
 import sys
-# Import the centralized configuration and dependency handling from data_prep
-# We explicitly import the global list MOCK_CATEGORIES which contains the class names
-from data_prep import load_and_prepare_data, SEED, tf, MOCK_CATEGORIES 
-from data_prep import IMAGE_SIZE as DATA_PREP_IMAGE_SIZE
-from data_prep import IS_REAL_TF # Import the determined status from data_prep
+import numpy as np
+# Use modular configuration instead of data_prep dependency
+from config_loader import (
+    load_categories, get_model_config, get_training_config, 
+    get_data_config, get_image_size, get_num_classes
+)
+from data_prep import load_and_prepare_data  # Only for data loading functionality
+
+# Load configuration from JSON files
+CATEGORIES = load_categories()
+MODEL_CONFIG = get_model_config()
+TRAINING_CONFIG = get_training_config()
+DATA_CONFIG = get_data_config()
+
+# Extract configuration values
+IMAGE_SIZE = get_image_size()
+SEED = MODEL_CONFIG.get('seed', 42)
+LEARNING_RATE = MODEL_CONFIG.get('learning_rate', 0.0001)
+EPOCHS = MODEL_CONFIG.get('epochs', 10)
+BATCH_SIZE = MODEL_CONFIG.get('batch_size', 32)
+
+# Try to import TensorFlow and check availability
+try:
+    import tensorflow as tf
+    IS_REAL_TF = hasattr(tf, 'version')
+    if IS_REAL_TF:
+        tf.random.set_seed(SEED)
+        print("TensorFlow initialization complete.")
+except ImportError:
+    tf = None
+    IS_REAL_TF = False
+    print("\nNOTE: TensorFlow not available. Proceeding with mock training.")
 
 if IS_REAL_TF:
     # Only import necessary Keras components if the real TF is available
-    from tensorflow.keras.applications import MobileNetV2
-    from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, RandomFlip, RandomRotation, RandomZoom, Rescaling
-    from tensorflow.keras.models import Model, Sequential
-    from tensorflow.keras.optimizers import Adam
-    from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-    # Set seed early for real TensorFlow
-    tf.random.set_seed(SEED)
-    print("TensorFlow initialization complete.")
-else:
-    # If not real TF, inform the user we are using mock utilities
-    print("\nNOTE: Proceeding with mock training. Install TensorFlow and related dependencies for real training.")
-    # The mock tf object already handles set_seed when imported from data_prep.
+    try:
+        from tensorflow.keras.applications import MobileNetV2
+        from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, RandomFlip, RandomRotation, RandomZoom, Rescaling
+        from tensorflow.keras.models import Model, Sequential
+        from tensorflow.keras.optimizers import Adam
+        from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+        print("Keras components imported successfully.")
+    except ImportError as e:
+        print(f"Error importing Keras components: {e}")
+        IS_REAL_TF = False
 
 # --- Model Configuration ---
 # Updated model name to reflect the dataset
-MODEL_SAVE_PATH = 'biomedical_waste_classifier.keras' 
-IMAGE_SIZE = DATA_PREP_IMAGE_SIZE # Use size from data_prep
-LEARNING_RATE = 0.0001
-EPOCHS = 10
+MODEL_SAVE_PATH = MODEL_CONFIG.get('name', 'biomedical_waste_classifier.keras')
 
 def build_data_augmentation_layers():
     """Defines a Keras Sequential model for on-the-fly data augmentation."""
@@ -109,7 +131,7 @@ def build_and_train_model(train_ds, val_ds, num_classes):
         print(f"\n--- Beginning Training for {EPOCHS} epochs ---")
         try:
             # We use the train_ds and val_ds directly from load_and_prepare_data
-            model.fit(
+            history = model.fit(
                 train_ds,
                 validation_data=val_ds,
                 epochs=EPOCHS,
@@ -117,6 +139,21 @@ def build_and_train_model(train_ds, val_ds, num_classes):
             )
             # The ModelCheckpoint callback handles saving the best version.
             print(f"\nTraining completed. The best model was saved to {MODEL_SAVE_PATH}")
+            
+            # 5. Generate comprehensive model metrics
+            print("\n--- Generating Model Metrics ---")
+            try:
+                from model_metrics import generate_model_metrics
+                # Load the best saved model for evaluation
+                best_model = tf.keras.models.load_model(MODEL_SAVE_PATH)
+                generate_model_metrics(best_model, val_ds, save_dir="./metrics")
+                print("Model metrics generated successfully. Check the ./metrics directory for results.")
+            except ImportError:
+                print("Warning: Could not import model_metrics. Skipping metrics generation.")
+            except Exception as e:
+                print(f"Warning: Failed to generate metrics: {e}")
+            
+            return history
             
         except tf.errors.InvalidArgumentError as e:
             print(f"\nTensorFlow Error during training (InvalidArgumentError): {e}")
@@ -135,6 +172,17 @@ def build_and_train_model(train_ds, val_ds, num_classes):
         with open(MODEL_SAVE_PATH, 'w') as f:
             f.write("Mock Model Data")
         print(f"Mock: Training completed. Mock model saved to disk at {MODEL_SAVE_PATH}")
+        
+        # Generate mock metrics
+        print("\n--- Generating Mock Model Metrics ---")
+        try:
+            from model_metrics import generate_model_metrics
+            generate_model_metrics(model=None, validation_dataset=None, save_dir="./metrics")
+            print("Mock model metrics generated successfully. Check the ./metrics directory for results.")
+        except ImportError:
+            print("Warning: Could not import model_metrics. Skipping mock metrics generation.")
+        except Exception as e:
+            print(f"Warning: Failed to generate mock metrics: {e}")
 
 
 def main():
@@ -144,8 +192,8 @@ def main():
     # train_ds and val_ds will either be real Keras datasets or MockDataset objects
     train_ds, val_ds = load_and_prepare_data()
 
-    # Get the number of classes from the MOCK_CATEGORIES list populated by data_prep
-    num_classes = len(MOCK_CATEGORIES)
+    # Get the number of classes from the loaded categories
+    num_classes = get_num_classes()
     
     # Check if the datasets were returned successfully AND we have classes
     # If the datasets are not None, training proceeds.
