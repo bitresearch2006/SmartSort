@@ -90,6 +90,21 @@ tasks.create("faasPush") {
     }
 }
 
+tasks.create("faasPushToContainerd") {
+    group = "faas"
+    description = "Import built image into faasd (containerd) via Docker->ctr pipe"
+    // We only need the image to be built locally, not pushed
+    //dependsOn("faasBuild")
+    doLast {
+            exec {
+                commandLine "bash", "-lc",
+                    "docker save ${imageName} | /usr/local/bin/ctr -n openfaas images import -"
+
+            }
+        println "Imported ${imageName} into containerd (namespace: openfaas)."
+    }
+}
+
 tasks.create("faasDeploy") {
     group = "faas"
     description = "Deploy the faas function"
@@ -106,4 +121,53 @@ tasks.create("faasAll") {
     group = "faas"
     description = "Build, push and deploy in one go"
     dependsOn("faasDeploy")
+}
+
+def warmupLine = "@reboot /bin/bash -lc 'until curl -s http://127.0.0.1:8080/healthz > /dev/null; do sleep 5; done; export OPENFAAS_URL=http://127.0.0.1:8080; echo warmup | /usr/local/bin/faas-cli invoke SmartSort >> ~/faas-warmup.log 2>&1'"
+
+tasks.register("installWarmupCron") {
+    group = "ops"
+    description = "Install @reboot cron to warm OpenFaaS function 'SmartSort'"
+
+    doLast {
+        def existing = new ByteArrayOutputStream()
+        exec {
+            commandLine "bash", "-lc", "crontab -l || true"
+            standardOutput = existing
+        }
+        def current = existing.toString("UTF-8")
+        if (!current.contains(warmupLine)) {
+            def tmp = File.createTempFile("crontab", ".tmp")
+            tmp.text = (current.trim() + System.lineSeparator() + warmupLine + System.lineSeparator()).trim() + System.lineSeparator()
+            exec {
+                commandLine "bash", "-lc", "crontab ${tmp.absolutePath}"
+            }
+            println "Installed warmup cron entry."
+        } else {
+            println "Warmup cron entry already present. Skipping."
+        }
+    }
+}
+
+tasks.register("removeWarmupCron") {
+    group = "ops"
+    description = "Remove the warmup @reboot cron entry"
+
+    doLast {
+        def existing = new ByteArrayOutputStream()
+        exec {
+            commandLine "bash", "-lc", "crontab -l || true"
+            standardOutput = existing
+        }
+        def lines = existing.toString("UTF-8")
+                .readLines()
+                .findAll { it.trim() && !it.contains("faas-cli invoke SmartSort") }
+                .join(System.lineSeparator()) + System.lineSeparator()
+        def tmp = File.createTempFile("crontab", ".tmp")
+        tmp.text = lines
+        exec {
+            commandLine "bash", "-lc", "crontab ${tmp.absolutePath}"
+        }
+        println "Removed warmup cron entry (if existed)."
+    }
 }
