@@ -3,11 +3,11 @@ plugins {
 }
 
 ext {
-    functionName = "SmartSort"
+    functionName = "smartsort"
     imageName = "localhost:5000/${functionName}:latest"
     gatewayUrl = "http://127.0.0.1:8080"
     templateName = "python3-http-debian"   // declare here
-    templateRepo = "https://github.com/bitresearch2006/faas_templates.git"
+    templateRepo = "https://github.com/bit-faas/bit-python-flask-template.git"
     templateBranch = "main"                // optional, default branch
 }
 
