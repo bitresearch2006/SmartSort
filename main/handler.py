@@ -6,8 +6,8 @@ import io
 import logging
 import numpy as np
 # Use modular configuration instead of data_prep dependency
-from config_loader import load_categories, get_image_size, get_model_config
-from log_config import initialize_logger # Import the function
+from .config_loader import load_categories, get_image_size, get_model_config
+from .log_config import initialize_logger # Import the function
 
 # Initialize the logger at the start
 logger = initialize_logger()
