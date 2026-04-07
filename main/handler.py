@@ -114,56 +114,36 @@ def load_and_preprocess_image(image_b64):
 
 # --- Main FaaS Handler ---
 
-def handle(req):
-    """
-    Handles the incoming HTTP request (JSON body containing base64 image).
-    
-    Args:
-        req (str): JSON string containing the base64 image data under the key 'image_b64'.
-        
-    Returns:
-        str: JSON string containing the classification result or an error message.
-    """
-    
-    # 1. Check for Model Readiness
-    if IS_REAL_TF and model is None:
-        return json.dumps({
-            "status": "error",
-            "message": "Model not loaded. Check model path and TensorFlow installation."
-        })
-    
-    try:
-        # 2. Parse the Request
-        input_data = json.loads(req)
-        image_b64 = input_data.get("image_b64")
 
-        if not image_b64:
-            logger.warning("Received request with no 'image_b64' key.")
-            return json.dumps({
-                "status": "error",
-                "message": "Missing 'image_b64' field in the request body."
-            })
-            
-    except json.JSONDecodeError:
-        logger.error("Failed to decode input JSON string.")
+def handle(image_b64=None, **kwargs):
+    """
+    Handles the incoming HTTP request where the gateway passes JSON fields
+    as keyword arguments, including 'image_b64'.
+    """
+
+    # 1. Validate Input
+    if image_b64 is None:
+        logger.error("Missing 'image_b64' field in request.")
         return json.dumps({
             "status": "error",
-            "message": "Invalid JSON input."
+            "message": "Missing required field 'image_b64'."
         })
-    except Exception as e:
-        logger.error(f"Error during request parsing: {e}")
+
+    # 2. Check Model Readiness
+    if IS_REAL_TF and model is None:
+        logger.error("Model not loaded.")
         return json.dumps({
             "status": "error",
-            "message": f"Error parsing request: {str(e)}"
+            "message": "Model not loaded. Check TensorFlow and model path."
         })
-        
+
     # 3. Preprocess Image
     processed_img = load_and_preprocess_image(image_b64)
     if processed_img is None:
-        # load_and_preprocess_image logs the error.
+        logger.error("Image preprocessing failed.")
         return json.dumps({
             "status": "error",
-            "message": "Failed to decode or preprocess image data."
+            "message": "Failed to preprocess image."
         })
 
     try:
