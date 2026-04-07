@@ -6,7 +6,7 @@ functions:
   SmartSort:
     lang: python3-http-debian
     handler: ./main
-    image: localhost:5000/SmartSort:latest
+    image: localhost:5000/smartsort:latest
     min_replicas: 1
     build_args:
       ADDITIONAL_PACKAGE: ""
